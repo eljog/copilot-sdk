@@ -65,6 +65,7 @@ import type {
     ToolCallResponsePayload,
     ToolResultObject,
     TraceContextProvider,
+    TransportProvider,
     TypedSessionLifecycleHandler,
 } from "./types.js";
 import { defaultJoinSessionPermissionHandler } from "./types.js";
@@ -245,6 +246,7 @@ export class CopilotClient {
             | "sessionFs"
             | "tcpConnectionToken"
             | "copilotHome"
+            | "transport"
         >
     > & {
         cliPath?: string;
@@ -255,6 +257,7 @@ export class CopilotClient {
         copilotHome?: string;
     };
     private isExternalServer: boolean = false;
+    private transportProvider: TransportProvider | null = null;
     private forceStopping: boolean = false;
     /** Token sent in `connect`; auto-generated when the SDK spawns its own CLI in TCP mode. */
     private effectiveConnectionToken?: string;
@@ -325,6 +328,21 @@ export class CopilotClient {
      */
     constructor(options: CopilotClientOptions = {}) {
         // Validate mutually exclusive options
+        if (
+            options.transport &&
+            (options.cliUrl || options.cliPath || options.useStdio !== undefined || options.isChildProcess)
+        ) {
+            throw new Error(
+                "transport is mutually exclusive with cliUrl, cliPath, useStdio, and isChildProcess"
+            );
+        }
+
+        if (options.transport && (options.gitHubToken || options.useLoggedInUser !== undefined)) {
+            throw new Error(
+                "gitHubToken and useLoggedInUser cannot be used with transport (external server manages its own auth)"
+            );
+        }
+
         if (options.cliUrl && (options.useStdio === true || options.cliPath)) {
             throw new Error("cliUrl is mutually exclusive with useStdio and cliPath");
         }
@@ -354,8 +372,9 @@ export class CopilotClient {
             }
         }
 
-        const willUseStdio = options.cliUrl ? false : (options.useStdio ?? true);
-        const sdkSpawnsCli = !willUseStdio && !options.cliUrl && !options.isChildProcess;
+        const willUseStdio = (options.cliUrl || options.transport) ? false : (options.useStdio ?? true);
+        const sdkSpawnsCli =
+            !willUseStdio && !options.cliUrl && !options.isChildProcess && !options.transport;
         this.effectiveConnectionToken =
             options.tcpConnectionToken ?? (sdkSpawnsCli ? randomUUID() : undefined);
 
@@ -363,8 +382,11 @@ export class CopilotClient {
             this.validateSessionFsConfig(options.sessionFs);
         }
 
-        // Parse cliUrl if provided
-        if (options.cliUrl) {
+        // Store custom transport provider
+        if (options.transport) {
+            this.transportProvider = options.transport;
+            this.isExternalServer = true;
+        } else if (options.cliUrl) {
             const { host, port } = this.parseCliUrl(options.cliUrl);
             this.actualHost = host;
             this.actualPort = port;
@@ -381,13 +403,13 @@ export class CopilotClient {
 
         const effectiveEnv = options.env ?? process.env;
         this.options = {
-            cliPath: options.cliUrl
+            cliPath: (options.cliUrl || options.transport)
                 ? undefined
                 : options.cliPath || effectiveEnv.COPILOT_CLI_PATH || getBundledCliPath(),
             cliArgs: options.cliArgs ?? [],
             cwd: options.cwd ?? process.cwd(),
             port: options.port || 0,
-            useStdio: options.cliUrl ? false : (options.useStdio ?? true), // Default to stdio unless cliUrl is provided
+            useStdio: (options.cliUrl || options.transport) ? false : (options.useStdio ?? true),
             isChildProcess: options.isChildProcess ?? false,
             cliUrl: options.cliUrl,
             logLevel: options.logLevel || "debug",
@@ -592,6 +614,20 @@ export class CopilotClient {
             this.socket = null;
         }
 
+        // Dispose custom transport provider
+        if (this.transportProvider?.dispose) {
+            try {
+                await this.transportProvider.dispose();
+            } catch (error) {
+                errors.push(
+                    new Error(
+                        `Failed to dispose transport: ${error instanceof Error ? error.message : String(error)}`
+                    )
+                );
+            }
+            this.transportProvider = null;
+        }
+
         // Kill CLI process (only if we spawned it)
         if (this.cliProcess && !this.isExternalServer) {
             try {
@@ -670,6 +706,16 @@ export class CopilotClient {
                 // Ignore errors
             }
             this.socket = null;
+        }
+
+        // Dispose custom transport provider
+        if (this.transportProvider?.dispose) {
+            try {
+                await this.transportProvider.dispose();
+            } catch {
+                // Ignore errors during force stop
+            }
+            this.transportProvider = null;
         }
 
         // Force kill CLI process (only if we spawned it)
@@ -1698,16 +1744,37 @@ export class CopilotClient {
     }
 
     /**
-     * Connect to the CLI server (via socket or stdio)
+     * Connect to the CLI server (via socket, stdio, or custom transport)
      */
     private async connectToServer(): Promise<void> {
-        if (this.options.isChildProcess) {
+        if (this.transportProvider) {
+            return this.connectViaCustomTransport();
+        } else if (this.options.isChildProcess) {
             return this.connectToParentProcessViaStdio();
         } else if (this.options.useStdio) {
             return this.connectToChildProcessViaStdio();
         } else {
             return this.connectViaTcp();
         }
+    }
+
+    /**
+     * Connect via a user-supplied TransportProvider
+     */
+    private async connectViaCustomTransport(): Promise<void> {
+        const result = await this.transportProvider!.connect();
+
+        if ("stream" in result) {
+            this.connection = createMessageConnection(
+                new StreamMessageReader(result.stream),
+                new StreamMessageWriter(result.stream)
+            );
+        } else {
+            this.connection = createMessageConnection(result.reader, result.writer);
+        }
+
+        this.attachConnectionHandlers();
+        this.connection.listen();
     }
 
     /**

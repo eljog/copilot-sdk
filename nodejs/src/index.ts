@@ -84,6 +84,8 @@ export type {
     TelemetryConfig,
     TraceContext,
     TraceContextProvider,
+    TransportConnection,
+    TransportProvider,
     Tool,
     ToolHandler,
     ToolInvocation,

@@ -53,6 +53,46 @@ export interface TelemetryConfig {
     captureContent?: boolean;
 }
 
+/**
+ * A transport connection provides the readable and writable streams that
+ * carry JSON-RPC messages between the SDK and the Copilot CLI server.
+ *
+ * Return **one** of:
+ * - `stream` — a Node.js `Duplex` (or any object with readable + writable
+ *   stream interfaces). The SDK wraps it in `StreamMessageReader`/`StreamMessageWriter`.
+ * - `reader` + `writer` — a pair of `vscode-jsonrpc` `MessageReader` and
+ *   `MessageWriter` for full control over framing.
+ */
+export type TransportConnection =
+    | { stream: import("node:stream").Duplex }
+    | { reader: import("vscode-jsonrpc").MessageReader; writer: import("vscode-jsonrpc").MessageWriter };
+
+/**
+ * A transport provider gives the SDK a custom transport to communicate with
+ * a Copilot CLI server. Use this when the server is reachable only through a
+ * non-TCP channel (WebSocket, authenticated HTTP tunnel, SSH forwarding, etc.).
+ *
+ * @example
+ * ```typescript
+ * const transport: TransportProvider = {
+ *     async connect() {
+ *         const socket = await myTunnelLibrary.connect("wss://remote:443", { auth: "..." });
+ *         return { stream: socket };
+ *     },
+ *     async dispose() {
+ *         await myTunnelLibrary.disconnect();
+ *     },
+ * };
+ * const client = new CopilotClient({ transport });
+ * ```
+ */
+export interface TransportProvider {
+    /** Establish the transport. Called once during {@link CopilotClient.start}. */
+    connect(): Promise<TransportConnection>;
+    /** Optional cleanup. Called during {@link CopilotClient.stop} / {@link CopilotClient.forceStop}. */
+    dispose?(): Promise<void> | void;
+}
+
 export interface CopilotClientOptions {
     /**
      * Path to the CLI executable or JavaScript entry point.
@@ -108,6 +148,18 @@ export interface CopilotClientOptions {
      * Mutually exclusive with cliPath, useStdio
      */
     cliUrl?: string;
+
+    /**
+     * Custom transport provider for connecting to a Copilot CLI server through
+     * non-standard channels (WebSocket, authenticated HTTP tunnel, etc.).
+     *
+     * When provided, the SDK delegates connection establishment entirely to
+     * this provider instead of spawning a CLI process or opening a TCP socket.
+     *
+     * Mutually exclusive with {@link cliPath}, {@link cliUrl}, {@link useStdio},
+     * and {@link isChildProcess}.
+     */
+    transport?: TransportProvider;
 
     /**
      * Log level for the CLI server

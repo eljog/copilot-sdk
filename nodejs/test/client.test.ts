@@ -787,6 +787,122 @@ describe("CopilotClient", () => {
         });
     });
 
+    describe("Custom transport provider", () => {
+        const dummyTransport = {
+            async connect() {
+                const { PassThrough } = await import("node:stream");
+                const stream = new PassThrough();
+                return { stream };
+            },
+        };
+
+        it("should throw when transport is used with cliUrl", () => {
+            expect(() => {
+                new CopilotClient({
+                    transport: dummyTransport,
+                    cliUrl: "localhost:8080",
+                    logLevel: "error",
+                });
+            }).toThrow(/transport is mutually exclusive/);
+        });
+
+        it("should throw when transport is used with cliPath", () => {
+            expect(() => {
+                new CopilotClient({
+                    transport: dummyTransport,
+                    cliPath: "/path/to/cli",
+                    logLevel: "error",
+                });
+            }).toThrow(/transport is mutually exclusive/);
+        });
+
+        it("should throw when transport is used with useStdio", () => {
+            expect(() => {
+                new CopilotClient({
+                    transport: dummyTransport,
+                    useStdio: true,
+                    logLevel: "error",
+                });
+            }).toThrow(/transport is mutually exclusive/);
+        });
+
+        it("should throw when transport is used with isChildProcess", () => {
+            expect(() => {
+                new CopilotClient({
+                    transport: dummyTransport,
+                    isChildProcess: true,
+                    logLevel: "error",
+                });
+            }).toThrow(/transport is mutually exclusive/);
+        });
+
+        it("should throw when transport is used with gitHubToken", () => {
+            expect(() => {
+                new CopilotClient({
+                    transport: dummyTransport,
+                    gitHubToken: "gho_test_token",
+                    logLevel: "error",
+                });
+            }).toThrow(/gitHubToken and useLoggedInUser cannot be used with transport/);
+        });
+
+        it("should throw when transport is used with useLoggedInUser", () => {
+            expect(() => {
+                new CopilotClient({
+                    transport: dummyTransport,
+                    useLoggedInUser: false,
+                    logLevel: "error",
+                });
+            }).toThrow(/gitHubToken and useLoggedInUser cannot be used with transport/);
+        });
+
+        it("should mark client as using external server", () => {
+            const client = new CopilotClient({
+                transport: dummyTransport,
+                logLevel: "error",
+            });
+
+            expect((client as any).isExternalServer).toBe(true);
+        });
+
+        it("should set useStdio to false", () => {
+            const client = new CopilotClient({
+                transport: dummyTransport,
+                logLevel: "error",
+            });
+
+            expect(client["options"].useStdio).toBe(false);
+        });
+
+        it("should not resolve cliPath", () => {
+            const client = new CopilotClient({
+                transport: dummyTransport,
+                logLevel: "error",
+            });
+
+            expect(client["options"].cliPath).toBeUndefined();
+        });
+
+        it("should store the transport provider", () => {
+            const client = new CopilotClient({
+                transport: dummyTransport,
+                logLevel: "error",
+            });
+
+            expect((client as any).transportProvider).toBe(dummyTransport);
+        });
+
+        it("should allow tcpConnectionToken with transport", () => {
+            const client = new CopilotClient({
+                transport: dummyTransport,
+                tcpConnectionToken: "my-token",
+                logLevel: "error",
+            });
+
+            expect((client as any).effectiveConnectionToken).toBe("my-token");
+        });
+    });
+
     describe("overridesBuiltInTool in tool definitions", () => {
         it("sends overridesBuiltInTool in tool definition on session.create", async () => {
             const client = new CopilotClient();
