@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -99,8 +100,9 @@ type Client struct {
 	sessions         map[string]*Session
 	sessionsMux      sync.Mutex
 	isExternalServer bool
-	conn             net.Conn // stores net.Conn for external TCP connections
-	useStdio         bool     // resolved value from options
+	conn             io.ReadWriteCloser // stores the connection for external TCP or custom transport
+	transport        TransportProvider  // custom transport provider, if set
+	useStdio         bool               // resolved value from options
 	autoStart        bool     // resolved value from options
 
 	modelsCache               []ModelInfo
@@ -167,6 +169,14 @@ func NewClient(options *ClientOptions) *Client {
 			panic("CLIUrl is mutually exclusive with UseStdio and CLIPath")
 		}
 
+		// Validate Transport mutual exclusivity
+		if options.Transport != nil && (options.CLIUrl != "" || options.CLIPath != "" || options.UseStdio != nil) {
+			panic("Transport is mutually exclusive with CLIUrl, CLIPath, and UseStdio")
+		}
+		if options.Transport != nil && (options.GitHubToken != "" || options.UseLoggedInUser != nil) {
+			panic("GitHubToken and UseLoggedInUser cannot be used with Transport (external transport manages its own auth)")
+		}
+
 		// Validate auth options with external server
 		if options.CLIUrl != "" && (options.GitHubToken != "" || options.UseLoggedInUser != nil) {
 			panic("GitHubToken and UseLoggedInUser cannot be used with CLIUrl (external server manages its own auth)")
@@ -185,6 +195,13 @@ func NewClient(options *ClientOptions) *Client {
 			client.isExternalServer = true
 			client.useStdio = false
 			opts.CLIUrl = options.CLIUrl
+		}
+
+		// Wire up custom transport if provided
+		if options.Transport != nil {
+			client.transport = options.Transport
+			client.isExternalServer = true
+			client.useStdio = false
 		}
 
 		if options.CLIPath != "" {
@@ -1697,6 +1714,9 @@ func (c *Client) monitorProcess() {
 
 // connectToServer establishes a connection to the server.
 func (c *Client) connectToServer(ctx context.Context) error {
+	if c.transport != nil {
+		return c.connectViaCustomTransport(ctx)
+	}
 	if c.useStdio {
 		// Already connected via stdio in startCLIServer
 		return nil
@@ -1742,6 +1762,29 @@ func (c *Client) connectViaTcp(ctx context.Context) error {
 	c.setupNotificationHandler()
 	c.client.Start()
 
+	return nil
+}
+
+// connectViaCustomTransport connects using the user-supplied TransportProvider.
+func (c *Client) connectViaCustomTransport(ctx context.Context) error {
+	rwc, err := c.transport.Connect(ctx)
+	if err != nil {
+		return fmt.Errorf("custom transport connect failed: %w", err)
+	}
+
+	c.conn = rwc
+	c.client = jsonrpc2.NewClient(rwc, rwc)
+	c.client.SetOnClose(func() {
+		go func() {
+			c.startStopMux.Lock()
+			defer c.startStopMux.Unlock()
+			c.state = StateDisconnected
+		}()
+	})
+	c.RPC = rpc.NewServerRpc(c.client)
+	c.internalRPC = rpc.NewInternalServerRpc(c.client)
+	c.setupNotificationHandler()
+	c.client.Start()
 	return nil
 }
 

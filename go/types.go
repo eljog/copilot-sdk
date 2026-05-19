@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"encoding/json"
+	"io"
 
 	"github.com/github/copilot-sdk/go/rpc"
 )
@@ -96,6 +97,21 @@ type ClientOptions struct {
 	// This option is only used when the SDK spawns the CLI process; it is ignored
 	// when connecting to an external server via CLIUrl.
 	Remote bool
+	// Transport provides a custom transport for the JSON-RPC connection.
+	// When set, the SDK connects through this provider instead of spawning
+	// a CLI subprocess or dialing TCP. Mutually exclusive with CLIUrl,
+	// CLIPath, and UseStdio.
+	Transport TransportProvider
+}
+
+// TransportProvider supplies a custom transport for the JSON-RPC connection.
+// When set on ClientOptions, the SDK delegates connection establishment
+// entirely to this provider instead of spawning a CLI process or opening a TCP socket.
+type TransportProvider interface {
+	// Connect establishes the transport and returns a bidirectional stream
+	// that carries JSON-RPC messages. The SDK uses this as both the reader
+	// and writer for its JSON-RPC client.
+	Connect(ctx context.Context) (io.ReadWriteCloser, error)
 }
 
 // TelemetryConfig configures OpenTelemetry integration for the Copilot CLI process.
