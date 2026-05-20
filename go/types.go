@@ -994,7 +994,7 @@ type MessageOptions struct {
 	// Prompt is the message to send
 	Prompt string
 	// Attachments are file or directory attachments
-	Attachments []Attachment
+	Attachments []UserMessageAttachment
 	// Mode is the message delivery mode (default: "enqueue")
 	Mode string
 	// RequestHeaders are custom per-turn HTTP headers for outbound model requests.
@@ -1351,7 +1351,7 @@ type sessionAbortRequest struct {
 type sessionSendRequest struct {
 	SessionID      string            `json:"sessionId"`
 	Prompt         string            `json:"prompt"`
-	Attachments    []Attachment      `json:"attachments,omitempty"`
+	Attachments    []UserMessageAttachment `json:"attachments,omitempty"`
 	Mode           string            `json:"mode,omitempty"`
 	Traceparent    string            `json:"traceparent,omitempty"`
 	Tracestate     string            `json:"tracestate,omitempty"`
